@@ -38,12 +38,17 @@ def load_shadow():
 # -------------------------------------------------------------
 # Auto-refresh toggle
 # -------------------------------------------------------------
+from streamlit_autorefresh import st_autorefresh
+
+# Auto-refresh toggle
 col1, col2 = st.columns([1,3])
 with col1:
-    refresh = st.checkbox("Auto-refresh (30s)", value=True)
+    auto = st.checkbox("Auto-refresh (30s)", value=True)
 
-if refresh:
-    st.experimental_rerun()
+# If enabled → trigger entire app to reload every ~30 seconds
+if auto:
+    st_autorefresh(interval=30_000, key="refresh")
+
 
 
 # -------------------------------------------------------------
