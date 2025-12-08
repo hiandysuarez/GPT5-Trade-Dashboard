@@ -1,203 +1,348 @@
+import os
+from datetime import datetime, date
+from typing import Optional, Dict, Any, List
+
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-from datetime import datetime, timedelta
-from supabase import create_client
+from supabase import create_client, Client
 
-# -------------------------------------------------------------
-# Load secrets
-# -------------------------------------------------------------
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+# ============================================================
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# 1. Supabase Client Setup
+
+# ============================================================
+
+@st.cache_resource
+def get_supabase_client() -> Optional[Client]:
+"""
+Initialize and cache Supabase client using Streamlit secrets.
+Expects:
+SUPABASE_URL
+SUPABASE_KEY
+in .streamlit/secrets.toml
+"""
+try:
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
+except Exception as e:
+st.error("Supabase secrets missing. Set SUPABASE_URL and SUPABASE_KEY in secrets.toml.")
+st.stop()
+
+```
+try:
+    client = create_client(url, key)
+    return client
+except Exception as e:
+    st.error(f"Failed to initialize Supabase client: {e}")
+    return None
+```
+
+sb = get_supabase_client()
+if sb is None:
+st.stop()
+
+# ============================================================
+
+# 2. Basic Page Config
+
+# ============================================================
 
 st.set_page_config(
-    page_title="GPT5-Trade Dashboard",
-    page_icon="📈",
-    layout="wide"
+page_title="GPT5-Trade Dashboard",
+layout="wide",
 )
 
-st.title("📈 GPT5-Trade — Live Trading Dashboard")
+st.title("📊 GPT5-Trade Monitoring Dashboard")
+st.caption("Realtime view for live trades, P&L, and ML shadow predictions")
 
+# ============================================================
 
-# -------------------------------------------------------------
-# Helper: fetch tables
-# -------------------------------------------------------------
-@st.cache_data(ttl=30)
-def load_trades():
-    resp = supabase.table("trades").select("*").order("ts", desc=True).execute()
-    return pd.DataFrame(resp.data or [])
+# 3. Data Fetch Helpers
+
+# ============================================================
 
 @st.cache_data(ttl=30)
-def load_shadow():
-    resp = supabase.table("ml_shadow_logs").select("*").order("ts", desc=True).execute()
-    return pd.DataFrame(resp.data or [])
+def fetch_trades(symbol: Optional[str] = None, day: Optional[date] = None) -> pd.DataFrame:
+"""
+Fetch trades from Supabase `trades` table.
+Optional filters:
+- symbol
+- specific date (UTC)
+"""
+try:
+query = sb.table("trades").select("*")
 
+```
+    if symbol:
+        query = query.eq("symbol", symbol)
 
-# -------------------------------------------------------------
-# Auto-refresh toggle
-# -------------------------------------------------------------
-from streamlit_autorefresh import st_autorefresh
+    if day:
+        start = datetime.combine(day, datetime.min.time())
+        end = datetime.combine(day, datetime.max.time())
+        query = query.gte("ts", start.isoformat()).lte("ts", end.isoformat())
 
-# Auto-refresh toggle
-col1, col2 = st.columns([1,3])
-with col1:
-    auto = st.checkbox("Auto-refresh (30s)", value=True)
+    resp = query.order("ts", desc=False).execute()
+    rows = resp.data or []
+    df = pd.DataFrame(rows)
+    return df
+except Exception as e:
+    st.error(f"Error fetching trades: {e}")
+    return pd.DataFrame()
+```
 
-# If enabled → trigger entire app to reload every ~30 seconds
-if auto:
-    st_autorefresh(interval=30_000, key="refresh")
+@st.cache_data(ttl=30)
+def fetch_shadow_logs(symbol: Optional[str] = None, day: Optional[date] = None) -> pd.DataFrame:
+"""
+Fetch ML shadow-mode logs from Supabase `ml_shadow_logs` table.
+"""
+try:
+query = sb.table("ml_shadow_logs").select("*")
 
+```
+    if symbol:
+        query = query.eq("symbol", symbol)
 
+    if day:
+        start = datetime.combine(day, datetime.min.time())
+        end = datetime.combine(day, datetime.max.time())
+        query = query.gte("ts", start.isoformat()).lte("ts", end.isoformat())
 
-# -------------------------------------------------------------
-# Load data
-# -------------------------------------------------------------
-trades_df = load_trades()
-shadow_df = load_shadow()
+    resp = query.order("ts", desc=False).execute()
+    rows = resp.data or []
+    df = pd.DataFrame(rows)
+    return df
+except Exception as e:
+    st.error(f"Error fetching shadow logs: {e}")
+    return pd.DataFrame()
+```
 
-if trades_df.empty:
-    st.warning("No trades found in database.")
+# ============================================================
+
+# 4. Sidebar Controls
+
+# ============================================================
+
+st.sidebar.header("Filters")
+
+# Date filter (default = today)
+
+today = datetime.utcnow().date()
+selected_date = st.sidebar.date_input("Trading date (UTC)", value=today)
+
+# Symbol filter
+
+symbol_options: List[str] = []
+trades_for_list = fetch_trades(day=selected_date)
+if not trades_for_list.empty and "symbol" in trades_for_list.columns:
+symbol_options = sorted(trades_for_list["symbol"].dropna().unique().tolist())
+
+selected_symbol = None
+if symbol_options:
+selected_symbol = st.sidebar.selectbox(
+"Symbol",
+options=["(All)"] + symbol_options,
+index=0,
+)
+if selected_symbol == "(All)":
+selected_symbol = None
+
+# Manual refresh
+
+if st.sidebar.button("🔄 Refresh data"):
+# Clear cached data
+fetch_trades.clear()
+fetch_shadow_logs.clear()
+st.experimental_rerun()
+
+# ============================================================
+
+# 5. Load Data With Filters
+
+# ============================================================
+
+df_trades = fetch_trades(symbol=selected_symbol, day=selected_date)
+df_shadow = fetch_shadow_logs(symbol=selected_symbol, day=selected_date)
+
+# Normalize timestamp columns to datetime
+
+for col in ("ts",):
+if col in df_trades.columns:
+df_trades[col] = pd.to_datetime(df_trades[col], errors="coerce")
+if col in df_shadow.columns:
+df_shadow[col] = pd.to_datetime(df_shadow[col], errors="coerce")
+
+# ============================================================
+
+# 6. Top-Level Metrics (Real Trades)
+
+# ============================================================
+
+st.subheader("📈 Daily Performance — Real Trades")
+
+if df_trades.empty:
+st.info("No trades found for this date / filters.")
 else:
-    # -------------------------------------------------------------
-    # SECTION 1 — Summary Stats
-    # -------------------------------------------------------------
-    st.subheader("📊 Summary Statistics")
+# Only exits (round-trips show at exits)
+exits = df_trades[df_trades["is_exit"] == True].copy()
 
-    trades_df["pnl"] = trades_df["pnl"].astype(float)
+```
+total_trades = len(exits)
+total_pnl = float(exits["realized_pnl"].fillna(0).sum()) if "realized_pnl" in exits.columns else float(exits["pnl"].fillna(0).sum())
+wins = int(exits["win"].fillna(False).sum()) if "win" in exits.columns else 0
+losses = total_trades - wins
+win_rate = (wins / total_trades * 100.0) if total_trades > 0 else 0.0
 
-    total_pnl = trades_df["pnl"].sum()
-    total_trades = len(trades_df)
-    wins = (trades_df["pnl"] > 0).sum()
-    losses = (trades_df["pnl"] < 0).sum()
-    win_rate = wins / max(1, (wins + losses))
-
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-
-    kpi1.metric("Total PnL", f"${total_pnl:,.2f}")
-    kpi2.metric("Total Trades", total_trades)
-    kpi3.metric("Win Rate", f"{win_rate*100:.1f}%")
-    kpi4.metric("Wins / Losses", f"{wins} / {losses}")
-
-    st.divider()
+col_a, col_b, col_c, col_d = st.columns(4)
+col_a.metric("Total Trades (exits)", total_trades)
+col_b.metric("P&L (realized)", f"{total_pnl:,.2f}")
+col_c.metric("Wins", wins)
+col_d.metric("Win Rate %", f"{win_rate:.1f}%")
 
 
-    # -------------------------------------------------------------
-    # SECTION 2 — PnL Over Time
-    # -------------------------------------------------------------
-    st.subheader("📈 PnL Over Time")
+# --------------------------------------------------------
+# P&L by Symbol
+# --------------------------------------------------------
+st.markdown("#### P&L by Symbol")
 
-    df_time = trades_df.copy()
-    df_time["ts"] = pd.to_datetime(df_time["ts"])
-    df_time = df_time.sort_values("ts")
-    df_time["cumulative_pnl"] = df_time["pnl"].cumsum()
+if "symbol" in exits.columns:
+    if "realized_pnl" in exits.columns:
+        pnl_col = "realized_pnl"
+    else:
+        pnl_col = "pnl"
 
-    fig = px.line(df_time, x="ts", y="cumulative_pnl", title="Cumulative PnL")
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-
-    # -------------------------------------------------------------
-    # SECTION 3 — Symbol-Level Performance
-    # -------------------------------------------------------------
-    st.subheader("🎯 Performance by Symbol")
-
-    sym = trades_df.groupby("symbol").agg(
-        trades=("symbol", "count"),
-        pnl=("pnl", "sum"),
-        wins=("pnl", lambda x: (x > 0).sum()),
-        losses=("pnl", lambda x: (x < 0).sum())
-    ).reset_index()
-
-    fig2 = px.bar(sym, x="symbol", y="pnl", color="pnl", title="PnL by Symbol", color_continuous_scale="Turbo")
-    st.plotly_chart(fig2, use_container_width=True)
-
-    st.dataframe(sym, use_container_width=True)
-
-    st.divider()
-
-
-    # -------------------------------------------------------------
-    # SECTION 4 — Real Trades Table
-    # -------------------------------------------------------------
-    st.subheader("📘 Live Trade Log")
-
-    show_cols = [
-        "ts", "symbol", "side", "qty", "fill_price", "pnl",
-        "pnl_pct", "reasoning", "confidence", "is_entry", "is_exit"
-    ]
-
-    st.dataframe(trades_df[show_cols], use_container_width=True, height=400)
-
-    st.divider()
-
-
-# -------------------------------------------------------------
-# SECTION 5 — ML SHADOW MODE VISUALS
-# -------------------------------------------------------------
-st.subheader("🧠 ML Shadow-Mode Predictions")
-
-if shadow_df.empty:
-    st.info("No ML shadow logs found.")
-else:
-
-    shadow_df["ts"] = pd.to_datetime(shadow_df["ts"])
-
-    # ----- Latest Predictions -----
-    st.markdown("### Latest 20 ML Predictions")
-    st.dataframe(shadow_df.head(20), height=300, use_container_width=True)
-
-    # ----- Direction distribution -----
-    st.markdown("### ML Direction Distribution")
-
-    dir_counts = shadow_df["ml_direction"].value_counts()
-    fig3 = px.pie(
-        names=dir_counts.index,
-        values=dir_counts.values,
-        title="Shadow-Mode Predicted Actions"
+    pnl_by_sym = (
+        exits.groupby("symbol")[pnl_col]
+        .sum()
+        .reset_index()
+        .rename(columns={pnl_col: "total_pnl"})
     )
-    st.plotly_chart(fig3, use_container_width=True)
 
-    # ----- Win probability histogram -----
-    st.markdown("### Win Probability Distribution")
-
-    shadow_df["ml_win_prob"] = shadow_df["ml_win_prob"].astype(float)
-
-    fig4 = px.histogram(
-        shadow_df,
-        x="ml_win_prob",
-        nbins=30,
-        title="ML Predicted Win Probability Histogram"
+    st.bar_chart(
+        pnl_by_sym.set_index("symbol")["total_pnl"],
+        height=220,
     )
-    st.plotly_chart(fig4, use_container_width=True)
-
-    st.divider()
-
-
-# -------------------------------------------------------------
-# SECTION 6 — Real vs Shadow Comparison
-# -------------------------------------------------------------
-st.subheader("⚖️ Real vs Shadow Decisions")
-
-if not trades_df.empty and not shadow_df.empty:
-
-    # Most recent shadow logs per symbol
-    latest_shadow = shadow_df.sort_values("ts").groupby("symbol").tail(1)
-
-    comparison_rows = []
-    for _, row in latest_shadow.iterrows():
-        comparison_rows.append({
-            "symbol": row["symbol"],
-            "shadow_dir": row["ml_direction"],
-            "shadow_win_prob": row["ml_win_prob"],
-        })
-
-    comp_df = pd.DataFrame(comparison_rows)
-    st.dataframe(comp_df, use_container_width=True)
-
 else:
-    st.info("Need at least one trade + one shadow log to compare.")
+    st.write("No symbol column available in trades table.")
+```
 
-st.write("— End of Dashboard —")
+# ============================================================
+
+# 7. Real Trades Table
+
+# ============================================================
+
+st.subheader("📜 Raw Trades (entries & exits)")
+
+if df_trades.empty:
+st.write("No trade rows to display.")
+else:
+# Sort newest first
+df_trades_disp = df_trades.sort_values("ts", ascending=False).copy()
+
+```
+# Select subset of useful columns if present
+cols_preferred = [
+    "ts",
+    "symbol",
+    "side",
+    "qty",
+    "fill_price",
+    "pnl",
+    "pnl_pct",
+    "realized_pnl",
+    "realized_pnl_pct",
+    "win",
+    "is_entry",
+    "is_exit",
+    "exit_reason",
+    "confidence",
+    "reasoning",
+    "order_id",
+    "entry_trade_id",
+    "model_version",
+]
+cols_present = [c for c in cols_preferred if c in df_trades_disp.columns]
+if cols_present:
+    st.dataframe(
+        df_trades_disp[cols_present],
+        use_container_width=True,
+        hide_index=True,
+    )
+else:
+    st.dataframe(df_trades_disp, use_container_width=True, hide_index=True)
+```
+
+# ============================================================
+
+# 8. Shadow vs Real — Comparison
+
+# ============================================================
+
+st.subheader("🧪 ML Shadow-Mode vs Real Trades")
+
+if df_shadow.empty:
+st.info("No shadow-mode logs found for this date / filters.")
+else:
+# Basic overview
+st.markdown("#### Shadow-mode Overview")
+
+```
+total_shadow = len(df_shadow)
+unique_shadow_symbols = df_shadow["symbol"].dropna().nunique() if "symbol" in df_shadow.columns else 0
+
+c1, c2 = st.columns(2)
+c1.metric("Shadow logs", total_shadow)
+c2.metric("Symbols (shadow)", unique_shadow_symbols)
+
+# If ml_direction + ml_win_prob exist, show distribution
+if "ml_direction" in df_shadow.columns:
+    dir_counts = (
+        df_shadow["ml_direction"]
+        .fillna("UNKNOWN")
+        .value_counts()
+        .reset_index()
+        .rename(columns={"index": "direction", "ml_direction": "count"})
+    )
+
+    st.markdown("#### Shadow prediction directions")
+    st.bar_chart(
+        dir_counts.set_index("direction")["count"],
+        height=220,
+    )
+
+# Show raw shadow logs (selected columns)
+st.markdown("#### Raw shadow logs")
+cols_shadow_pref = [
+    "ts",
+    "symbol",
+    "ml_direction",
+    "ml_probs",
+    "ml_win_prob",
+    "bot_action",
+    "real_trade_id",
+]
+cols_shadow_present = [c for c in cols_shadow_pref if c in df_shadow.columns]
+
+df_shadow_disp = df_shadow.sort_values("ts", ascending=False).copy()
+
+if cols_shadow_present:
+    st.dataframe(
+        df_shadow_disp[cols_shadow_present],
+        use_container_width=True,
+        hide_index=True,
+    )
+else:
+    st.dataframe(df_shadow_disp, use_container_width=True, hide_index=True)
+```
+
+# ============================================================
+
+# 9. Footer / Debug
+
+# ============================================================
+
+st.markdown("---")
+st.caption(
+"Backend: Supabase `trades` + `ml_shadow_logs`. "
+"This dashboard is read-only and safe to expose to Streamlit Cloud."
+)
