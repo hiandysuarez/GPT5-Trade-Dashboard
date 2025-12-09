@@ -207,49 +207,54 @@ else:
 
 
 # ============================================================
-# 8. Raw Trades Table (Exits Only, Color-Coded, Limit 10)
+# 8. Raw Trades Table (Global Last 10 Exits, Color-Coded)
 # ============================================================
 
-st.subheader("📜 Exit Trades (last 10, colored by P&L)")
+st.subheader("📜 Latest Exit Trades (Global, last 10, colored by P&L)")
 
-if df_trades.empty:
-    st.info("No trades recorded.")
+# --- Fetch ALL trades ignoring date ---
+df_all_trades = fetch_trades(symbol=None, day=None)
+
+if df_all_trades.empty:
+    st.info("No recorded trades exist.")
 else:
-    # Normalize exit state
-    df_trades["is_exit_norm"] = df_trades["is_exit"].apply(normalize_exit_flag)
+    # Normalize timestamps
+    df_all_trades = normalize_ts(df_all_trades)
 
-    # Filter only exits with valid PnL
-    df_exits = df_trades[
-        (df_trades["is_exit_norm"] == True) &
-        (
-            df_trades["realized_pnl"].notna()
-            if "realized_pnl" in df_trades.columns
-            else df_trades["pnl"].notna()
-        )
+    # Normalize exit flag
+    df_all_trades["is_exit_norm"] = df_all_trades["is_exit"].apply(normalize_exit_flag)
+
+    # Determine PnL column
+    pnl_col = "realized_pnl" if "realized_pnl" in df_all_trades.columns else "pnl"
+
+    # Filter: Only exits with valid PnL
+    df_exits = df_all_trades[
+        (df_all_trades["is_exit_norm"] == True) &
+        (df_all_trades[pnl_col].notna())
     ].copy()
 
     if df_exits.empty:
-        st.info("No exit records with P&L yet.")
+        st.info("No exit trades with P&L yet.")
     else:
-        # Sort newest first, then take top 10
+        # Sort newest first, take last 10
         df_exits = df_exits.sort_values("ts", ascending=False).head(10)
 
-        # Determine PnL column
-        pnl_col = "realized_pnl" if "realized_pnl" in df_exits.columns else "pnl"
-
-        def style_pnl(v):
+        # Styling using Styler.map() (new Streamlit compliant API)
+        def color_pnl(v):
             try:
                 v = float(v)
                 if v > 0:
-                    return "background-color: rgba(0,255,0,0.20)"
+                    return "background-color: rgba(0, 255, 0, 0.25);"  # green
                 if v < 0:
-                    return "background-color: rgba(255,0,0,0.20)"
+                    return "background-color: rgba(255, 0, 0, 0.25);"  # red
             except:
-                pass
+                return ""
             return ""
 
+        styled = df_exits.style.map(color_pnl, subset=[pnl_col])
+
         st.dataframe(
-            df_exits.style.applymap(style_pnl, subset=[pnl_col]),
+            styled,
             width="stretch",
             hide_index=True,
         )
