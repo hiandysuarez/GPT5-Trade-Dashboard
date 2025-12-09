@@ -38,7 +38,9 @@ def get_supabase_client() -> Optional[Client]:
 sb = get_supabase_client()
 if sb is None:
     st.stop()
-
+# --- Debug: show that secrets + client resolved ---
+with st.sidebar.expander("🔍 Debug info", expanded=False):
+    st.write("Supabase URL:", st.secrets.get("SUPABASE_URL", "missing")[:40] + "...")
 
 # ============================================================
 # 2. Basic Page Config
@@ -78,7 +80,12 @@ def fetch_trades(symbol: Optional[str] = None, day: Optional[date] = None) -> pd
 
         resp = query.order("ts", desc=False).execute()
         rows = resp.data or []
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+
+        # 🔍 Debug: show how many rows we fetched
+        st.sidebar.write(f"Trades fetched: {len(df)}")
+
+        return df
 
     except Exception as e:
         st.error(f"Error fetching trades: {e}")
@@ -103,7 +110,12 @@ def fetch_shadow_logs(symbol: Optional[str] = None, day: Optional[date] = None) 
 
         resp = query.order("ts", desc=False).execute()
         rows = resp.data or []
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+
+        # 🔍 Debug: show how many shadow rows we fetched
+        st.sidebar.write(f"Shadow logs fetched: {len(df)}")
+
+        return df
 
     except Exception as e:
         st.error(f"Error fetching shadow logs: {e}")
