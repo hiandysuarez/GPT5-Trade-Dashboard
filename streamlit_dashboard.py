@@ -212,10 +212,14 @@ else:
             pass
         return ""
 
+    # Color both pnl + realized_pnl columns when they exist
+    pnl_columns = [col for col in ["pnl", "realized_pnl"] if col in df_exits.columns]
+
     styled = df_exits.style.applymap(
-        highlight_pnl, 
-        subset=[pnl_col_global]
+        highlight_pnl,
+        subset=pnl_columns
     )
+
 
     # Force single-line, horizontal scroll
     st.markdown(
