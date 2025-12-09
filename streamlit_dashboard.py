@@ -20,6 +20,7 @@ st_autorefresh(interval=60_000, key="refresh")
 
 @st.cache_resource
 def get_supabase_client() -> Optional[Client]:
+    """Initialize Supabase client from Streamlit secrets."""
     try:
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_KEY"]
@@ -40,17 +41,29 @@ if sb is None:
 
 
 # ============================================================
-# Utility: Normalize timestamps
+# 2. Utilities
 # ============================================================
 
 def normalize_ts(df: pd.DataFrame):
+    """Convert ts column to datetime."""
     if "ts" in df.columns:
         df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
     return df
 
 
+def normalize_exit_flag(val):
+    """Robust is_exit normalization: handles booleans, ints, strings."""
+    if val is True:
+        return True
+    if val in [False, None]:
+        return False
+
+    s = str(val).strip().lower()
+    return s in ("true", "1", "t", "yes", "y")
+
+
 # ============================================================
-# 2. Page Config
+# 3. Page Config
 # ============================================================
 
 st.set_page_config(
@@ -63,7 +76,7 @@ st.caption("Realtime view for entries, exits, P&L, and ML shadow predictions")
 
 
 # ============================================================
-# 3. Fetch Helpers
+# 4. Fetch Helpers
 # ============================================================
 
 @st.cache_data(ttl=10)
@@ -111,7 +124,7 @@ def fetch_shadow(symbol: Optional[str], day: Optional[date]):
 
 
 # ============================================================
-# 4. Sidebar
+# 5. Sidebar
 # ============================================================
 
 st.sidebar.header("Filters")
@@ -133,7 +146,7 @@ if st.sidebar.button("🔄 Force Refresh"):
 
 
 # ============================================================
-# 5. Load data
+# 6. Load data
 # ============================================================
 
 df_trades = fetch_trades(symbol, selected_date)
@@ -141,7 +154,7 @@ df_shadow = fetch_shadow(symbol, selected_date)
 
 
 # ============================================================
-# 6. Daily P&L Summary
+# 7. Daily Performance Section
 # ============================================================
 
 st.subheader("📈 Daily Performance — Real Trades")
@@ -149,12 +162,8 @@ st.subheader("📈 Daily Performance — Real Trades")
 if df_trades.empty:
     st.info("No trades for this day.")
 else:
-
-    # ---- Correct Exit Detection ----
-    def is_exit_flag(val):
-        return val in [True, "true", "True", "1", 1, "yes", "t", "T"]
-
-    df_trades["is_exit_norm"] = df_trades["is_exit"].apply(is_exit_flag)
+    # Normalize exit detection fully
+    df_trades["is_exit_norm"] = df_trades["is_exit"].apply(normalize_exit_flag)
 
     exits = df_trades[df_trades["is_exit_norm"] == True].copy()
 
@@ -172,12 +181,12 @@ else:
     c4.metric("Win Rate", f"{win_rate:.1f}%")
 
 
-    # ---- Debug Panel (Shows EXITS found) ----
+    # -------- Debug: Show exit rows --------
     with st.expander("🔍 DEBUG — Exit rows detected"):
         st.write(exits)
 
 
-    # ---- P&L by Symbol ----
+    # -------- P&L by Symbol --------
     st.markdown("### 💰 P&L by Symbol")
 
     if exits.empty:
@@ -194,7 +203,7 @@ else:
 
 
 # ============================================================
-# 7. Raw Trades Table
+# 8. Raw Trades Table (Color-coded)
 # ============================================================
 
 st.subheader("📜 Raw Trades (colored by P&L)")
@@ -204,17 +213,18 @@ if df_trades.empty:
 else:
     df_disp = df_trades.sort_values("ts", ascending=False)
 
-    def style_pnl(val):
-        if val is None:
+    def style_pnl(v):
+        if v is None:
             return ""
         try:
-            v = float(val)
-            if v > 0:
+            x = float(v)
+            if x > 0:
                 return "background-color: rgba(0,255,0,0.18)"
-            if v < 0:
+            if x < 0:
                 return "background-color: rgba(255,0,0,0.18)"
         except:
             return ""
+        return ""
 
     pnl_cols = [c for c in ["pnl", "realized_pnl"] if c in df_disp.columns]
 
@@ -226,7 +236,7 @@ else:
 
 
 # ============================================================
-# 8. Shadow Logs
+# 9. Shadow Logs Section
 # ============================================================
 
 st.subheader("🧪 ML Shadow-Mode Logs")
