@@ -207,34 +207,53 @@ else:
 
 
 # ============================================================
-# 8. Raw Trades Table (Color Coded)
+# 8. Raw Trades Table (Exits Only, Color-Coded, Limit 10)
 # ============================================================
 
-st.subheader("📜 Raw Trades (colored by P&L)")
+st.subheader("📜 Exit Trades (last 10, colored by P&L)")
 
 if df_trades.empty:
     st.info("No trades recorded.")
 else:
-    df_disp = df_trades.sort_values("ts", ascending=False)
+    # Normalize exit state
+    df_trades["is_exit_norm"] = df_trades["is_exit"].apply(normalize_exit_flag)
 
-    def style_pnl(v):
-        try:
-            v = float(v)
-            if v > 0:
-                return "background-color: rgba(0,255,0,0.20)"
-            if v < 0:
-                return "background-color: rgba(255,0,0,0.20)"
-        except:
-            pass
-        return ""
+    # Filter only exits with valid PnL
+    df_exits = df_trades[
+        (df_trades["is_exit_norm"] == True) &
+        (
+            df_trades["realized_pnl"].notna()
+            if "realized_pnl" in df_trades.columns
+            else df_trades["pnl"].notna()
+        )
+    ].copy()
 
-    pnl_cols = [c for c in ["pnl", "realized_pnl"] if c in df_disp.columns]
+    if df_exits.empty:
+        st.info("No exit records with P&L yet.")
+    else:
+        # Sort newest first, then take top 10
+        df_exits = df_exits.sort_values("ts", ascending=False).head(10)
 
-    st.dataframe(
-        df_disp.style.applymap(style_pnl, subset=pnl_cols),
-        width="stretch",
-        hide_index=True,
-    )
+        # Determine PnL column
+        pnl_col = "realized_pnl" if "realized_pnl" in df_exits.columns else "pnl"
+
+        def style_pnl(v):
+            try:
+                v = float(v)
+                if v > 0:
+                    return "background-color: rgba(0,255,0,0.20)"
+                if v < 0:
+                    return "background-color: rgba(255,0,0,0.20)"
+            except:
+                pass
+            return ""
+
+        st.dataframe(
+            df_exits.style.applymap(style_pnl, subset=[pnl_col]),
+            width="stretch",
+            hide_index=True,
+        )
+
 
 
 # ============================================================
