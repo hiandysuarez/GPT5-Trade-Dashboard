@@ -210,7 +210,7 @@ else:
 # 8. Raw Trades Table (Global Last 10 Exits, Color-Coded)
 # ============================================================
 
-st.subheader("📜 Latest Exit Trades (Global, last 10, colored by P&L)")
+st.subheader("📜 Latest Exit Trades (last 10)")
 
 # --- Fetch ALL trades ignoring date ---
 df_all_trades = fetch_trades(symbol=None, day=None)
