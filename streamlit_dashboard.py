@@ -121,8 +121,8 @@ today = datetime.utcnow().date()
 selected_date = st.sidebar.date_input("Trading date", today)
 
 df_for_symbols = fetch_trades(None, selected_date)
-
 symbols = sorted(df_for_symbols["symbol"].dropna().unique().tolist()) if "symbol" in df_for_symbols else []
+
 symbol = st.sidebar.selectbox("Symbol", ["(All)"] + symbols)
 symbol = None if symbol == "(All)" else symbol
 
@@ -179,13 +179,15 @@ else:
 
         chart = (
             alt.Chart(pnl_by_sym)
-            .mark_bar(size=25)  # thinner bars
+            .mark_bar(size=50)  # balanced bar width
             .encode(
                 x=alt.X("symbol:N", title="Symbol", sort=None),
                 y=alt.Y("total_pnl:Q", title="Total P&L", scale=alt.Scale(zero=False)),
-                color=alt.condition("datum.total_pnl > 0",
-                                    alt.value("#00cc66"),  # green
-                                    alt.value("#cc0000"))   # red
+                color=alt.condition(
+                    "datum.total_pnl > 0",
+                    alt.value("#00cc66"),  # green
+                    alt.value("#cc0000")   # red
+                )
             )
             .properties(height=300)
         )
@@ -194,12 +196,11 @@ else:
 
 
 # ============================================================
-# Latest 10 Exit Trades (Global, Colored)
+# Latest 10 Exit Trades (Global)
 # ============================================================
 
 st.subheader("📜 Latest 10 Exit Trades (Global, P&L Colored)")
 
-# Fetch all trades ignoring date filter
 df_all = fetch_trades(None, None)
 df_all["is_exit_norm"] = df_all["is_exit"].apply(normalize_exit_flag)
 
@@ -212,29 +213,38 @@ if df_exits.empty:
 else:
     df_exits = df_exits.sort_values("ts", ascending=False).head(10)
 
-    # ---- HTML colored table ----
-    def color_row(row):
-        v = row[pnl_col_global]
-        try:
-            v = float(v)
-            if v > 0:
-                color = "rgba(0,255,0,0.25)"
-            elif v < 0:
-                color = "rgba(255,0,0,0.25)"
-            else:
-                color = "transparent"
-        except:
-            color = "transparent"
-        return f"background-color:{color};"
+    # ---- HTML colored + wrapped table ----
+    html = """
+    <style>
+    .tbl td, .tbl th {
+        padding: 6px;
+        border-bottom: 1px solid #444;
+        text-align: left;
+        white-space: normal !important;       /* wrap long text */
+        word-break: break-word !important;    /* break long words */
+        max-width: 260px !important;
+    }
+    </style>
+    <table class="tbl" style="width:100%;border-collapse:collapse;">
+    """
 
-    html = "<table style='width:100%;border-collapse:collapse;'>"
-    html += "<tr>" + "".join(f"<th style='padding:6px;border-bottom:1px solid #666;text-align:left;'>{col}</th>" for col in df_exits.columns) + "</tr>"
+    # table header
+    html += "<tr>" + "".join(
+        f"<th>{col}</th>" for col in df_exits.columns
+    ) + "</tr>"
 
+    # rows
     for _, row in df_exits.iterrows():
-        style = color_row(row)
+        v = float(row[pnl_col_global])
+        color = (
+            "rgba(0,255,0,0.20)" if v > 0 else
+            "rgba(255,0,0,0.20)" if v < 0 else
+            "transparent"
+        )
+
         html += "<tr>"
         for col in df_exits.columns:
-            html += f"<td style='padding:6px;{style}'>{row[col]}</td>"
+            html += f"<td style='background-color:{color};'>{row[col]}</td>"
         html += "</tr>"
 
     html += "</table>"
@@ -260,7 +270,10 @@ else:
     cols = ["ts", "symbol", "ml_direction", "ml_win_prob", "bot_action"]
     cols = [c for c in cols if c in df_shadow.columns]
 
-    st.dataframe(df_shadow.sort_values("ts", ascending=False)[cols], hide_index=True)
+    st.dataframe(
+        df_shadow.sort_values("ts", ascending=False)[cols],
+        hide_index=True
+    )
 
 
 # ============================================================
