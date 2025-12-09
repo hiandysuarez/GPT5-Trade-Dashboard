@@ -40,6 +40,16 @@ if sb is None:
 
 
 # ============================================================
+# Utility: Normalize timestamps
+# ============================================================
+
+def normalize_ts(df: pd.DataFrame):
+    if "ts" in df.columns:
+        df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+    return df
+
+
+# ============================================================
 # 2. Page Config
 # ============================================================
 
@@ -55,12 +65,6 @@ st.caption("Realtime view for entries, exits, P&L, and ML shadow predictions")
 # ============================================================
 # 3. Fetch Helpers
 # ============================================================
-
-def normalize_ts(df: pd.DataFrame):
-    if "ts" in df.columns:
-        df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
-    return df
-
 
 @st.cache_data(ttl=10)
 def fetch_trades(symbol: Optional[str], day: Optional[date]):
@@ -107,7 +111,7 @@ def fetch_shadow(symbol: Optional[str], day: Optional[date]):
 
 
 # ============================================================
-# 4. Sidebar Filters
+# 4. Sidebar
 # ============================================================
 
 st.sidebar.header("Filters")
@@ -145,10 +149,12 @@ st.subheader("📈 Daily Performance — Real Trades")
 if df_trades.empty:
     st.info("No trades for this day.")
 else:
-    # normalize exit boolean
-    df_trades["is_exit_norm"] = (
-        df_trades["is_exit"].astype(str).str.lower().isin(["true", "1", "t", "yes"])
-    )
+
+    # ---- Correct Exit Detection ----
+    def is_exit_flag(val):
+        return val in [True, "true", "True", "1", 1, "yes", "t", "T"]
+
+    df_trades["is_exit_norm"] = df_trades["is_exit"].apply(is_exit_flag)
 
     exits = df_trades[df_trades["is_exit_norm"] == True].copy()
 
@@ -166,15 +172,12 @@ else:
     c4.metric("Win Rate", f"{win_rate:.1f}%")
 
 
-    # ==================================================
-    # Debug for you
-    # ==================================================
-    st.write("🔍 DEBUG — exits sample", exits.head())
+    # ---- Debug Panel (Shows EXITS found) ----
+    with st.expander("🔍 DEBUG — Exit rows detected"):
+        st.write(exits)
 
 
-    # ==================================================
-    # P&L by Symbol
-    # ==================================================
+    # ---- P&L by Symbol ----
     st.markdown("### 💰 P&L by Symbol")
 
     if exits.empty:
@@ -187,16 +190,14 @@ else:
             .rename(columns={pnl_col: "total_pnl"})
         )
 
-        st.write("🔍 DEBUG — grouped:", pnl_by_sym)
-
         st.bar_chart(pnl_by_sym.set_index("symbol")["total_pnl"])
 
 
 # ============================================================
-# 7. Real Trades Table (color-coded)
+# 7. Raw Trades Table
 # ============================================================
 
-st.subheader("📜 Raw Trades")
+st.subheader("📜 Raw Trades (colored by P&L)")
 
 if df_trades.empty:
     st.info("No trades recorded.")
@@ -213,15 +214,14 @@ else:
             if v < 0:
                 return "background-color: rgba(255,0,0,0.18)"
         except:
-            pass
-        return ""
+            return ""
 
     pnl_cols = [c for c in ["pnl", "realized_pnl"] if c in df_disp.columns]
 
     st.dataframe(
         df_disp.style.applymap(style_pnl, subset=pnl_cols),
-        hide_index=True,
         width="stretch",
+        hide_index=True,
     )
 
 
@@ -229,7 +229,7 @@ else:
 # 8. Shadow Logs
 # ============================================================
 
-st.subheader("🧪 ML Shadow-Mode vs Real Trades")
+st.subheader("🧪 ML Shadow-Mode Logs")
 
 if df_shadow.empty:
     st.info("No shadow logs.")
@@ -237,12 +237,7 @@ else:
     st.metric("Shadow logs", len(df_shadow))
 
     if "ml_direction" in df_shadow.columns:
-        counts = (
-            df_shadow["ml_direction"]
-            .fillna("UNKNOWN")
-            .value_counts()
-            .to_frame("count")
-        )
+        counts = df_shadow["ml_direction"].fillna("UNKNOWN").value_counts()
         st.bar_chart(counts)
 
     cols = ["ts", "symbol", "ml_direction", "ml_win_prob", "bot_action"]
@@ -250,8 +245,8 @@ else:
 
     st.dataframe(
         df_shadow.sort_values("ts", ascending=False)[cols],
-        hide_index=True,
         width="stretch",
+        hide_index=True,
     )
 
 
