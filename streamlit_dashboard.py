@@ -152,7 +152,9 @@ if symbol_options:
 if st.sidebar.button("🔄 Refresh data"):
     fetch_trades.clear()
     fetch_shadow_logs.clear()
-    st.experimental_rerun()
+    st.cache_data.clear()   # Safe global cache clear
+    st.success("Cache cleared — refreshing...")
+
 
 
 # ============================================================
