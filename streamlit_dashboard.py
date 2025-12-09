@@ -143,6 +143,7 @@ if st.sidebar.button("🔄 Refresh now"):
 # ============================================================
 
 df_trades = fetch_trades(symbol=selected_symbol, day=selected_date)
+st.sidebar.write("Columns:", list(df_trades.columns))
 df_shadow = fetch_shadow_logs(symbol=selected_symbol, day=selected_date)
 
 # Normalize timestamps
