@@ -155,8 +155,56 @@ else:
     c3.metric("Wins", int(wins))
     c4.metric("Win Rate", f"{win_rate:.1f}%")
 
+    # ========================================================
+    # 📈 Portfolio Value (Intraday Equity Curve)
+    # ========================================================
+    if not exits.empty:
+        # Base equity for the curve (can be set via env or secrets)
+        BASE_EQUITY = float(os.getenv("DASHBOARD_BASE_EQUITY", "100000"))
 
-    # -------- Static P&L by Symbol Chart --------
+        curve = exits.sort_values("ts").copy()
+        curve[pnl_col] = curve[pnl_col].fillna(0)
+        curve["cum_pnl"] = curve[pnl_col].cumsum()
+        curve["equity"] = BASE_EQUITY + curve["cum_pnl"]
+
+        # Add a flat start-of-day point so the line is horizontal until first trade
+        start_of_day = datetime.combine(selected_date, dtime.min)
+        start_row = {
+            "ts": pd.to_datetime(start_of_day),
+            "cum_pnl": 0.0,
+            "equity": BASE_EQUITY,
+        }
+        curve = pd.concat(
+            [pd.DataFrame([start_row]), curve[["ts", "cum_pnl", "equity"]]],
+            ignore_index=True,
+        )
+
+        st.markdown("### 📊 Portfolio Value (Intraday)")
+
+        equity_chart = (
+            alt.Chart(curve)
+            .mark_line()
+            .encode(
+                x=alt.X("ts:T", title="Time"),
+                y=alt.Y(
+                    "equity:Q",
+                    title="Portfolio Value",
+                    scale=alt.Scale(zero=False),
+                ),
+                tooltip=[
+                    alt.Tooltip("ts:T", title="Time"),
+                    alt.Tooltip("equity:Q", title="Equity", format=",.2f"),
+                    alt.Tooltip("cum_pnl:Q", title="Realized P&L", format=",.2f"),
+                ],
+            )
+            .properties(height=300)
+        )
+
+        st.altair_chart(equity_chart, use_container_width=True)
+
+    # ========================================================
+    # 💰 P&L by Symbol (existing bar chart)
+    # ========================================================
     st.markdown("### 💰 P&L by Symbol")
 
     if not exits.empty:
@@ -173,12 +221,17 @@ else:
             .encode(
                 x=alt.X("symbol:N", title="Symbol"),
                 y=alt.Y("total_pnl:Q", title="Total P&L", scale=alt.Scale(zero=False)),
-                color=alt.condition("datum.total_pnl > 0", alt.value("#00cc66"), alt.value("#cc0000"))
+                color=alt.condition(
+                    "datum.total_pnl > 0",
+                    alt.value("#00cc66"),
+                    alt.value("#cc0000"),
+                ),
             )
             .properties(height=300)
         )
 
         st.altair_chart(chart, use_container_width=True)
+
 
 
 # ============================================================
