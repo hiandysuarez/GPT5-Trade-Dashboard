@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, date, time as dtime
+from datetime import datetime, date, time as dtime, timedelta
 from typing import Optional
 
 import streamlit as st
@@ -57,6 +57,9 @@ def normalize_exit_flag(val):
 
 @st.cache_data(ttl=10)
 def fetch_trades(symbol: Optional[str], day: Optional[date]):
+    """
+    Fetch trades for a single day (used for Daily metrics).
+    """
     try:
         q = sb.table("trades").select("*")
 
@@ -73,6 +76,33 @@ def fetch_trades(symbol: Optional[str], day: Optional[date]):
 
     except Exception as e:
         st.error(f"❌ Error fetching trades: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=10)
+def fetch_trades_range(symbol: Optional[str],
+                       start_day: Optional[date],
+                       end_day: Optional[date]):
+    """
+    Fetch trades over a date RANGE (used for equity curve).
+    If start_day/end_day are None, returns all trades (optionally filtered by symbol).
+    """
+    try:
+        q = sb.table("trades").select("*")
+
+        if symbol:
+            q = q.eq("symbol", symbol)
+
+        if start_day and end_day:
+            start = datetime.combine(start_day, dtime.min)
+            end = datetime.combine(end_day, dtime.max)
+            q = q.gte("ts", start.isoformat()).lte("ts", end.isoformat())
+
+        df = pd.DataFrame(q.order("ts", desc=False).execute().data or [])
+        return normalize_ts(df)
+
+    except Exception as e:
+        st.error(f"❌ Error fetching trades (range): {e}")
         return pd.DataFrame()
 
 
@@ -109,7 +139,34 @@ st.caption("Realtime view for entries, exits, P&L, and ML shadow predictions")
 st.sidebar.header("Filters")
 
 today = datetime.utcnow().date()
-selected_date = st.sidebar.date_input("Trading Date", today)
+selected_date = st.sidebar.date_input("Anchor Date", today)
+
+# Range selector for equity curve
+range_option = st.sidebar.radio(
+    "Equity Range",
+    ["1D", "1W", "1M", "3M", "All"],
+    index=0,
+)
+
+# Compute range boundaries based on anchor date
+range_start: Optional[date]
+range_end: Optional[date]
+
+if range_option == "1D":
+    range_start = selected_date
+    range_end = selected_date
+elif range_option == "1W":
+    range_start = selected_date - timedelta(days=6)
+    range_end = selected_date
+elif range_option == "1M":
+    range_start = selected_date - timedelta(days=30)
+    range_end = selected_date
+elif range_option == "3M":
+    range_start = selected_date - timedelta(days=90)
+    range_end = selected_date
+else:  # "All"
+    range_start = None
+    range_end = None
 
 df_for_symbols = fetch_trades(None, selected_date)
 symbols = sorted(df_for_symbols["symbol"].dropna().unique().tolist()) if "symbol" in df_for_symbols else []
@@ -126,7 +183,12 @@ if st.sidebar.button("🔄 Force Refresh"):
 # Load Data
 # ============================================================
 
+# Daily data (for the selected_date metrics)
 df_trades = fetch_trades(symbol, selected_date)
+
+# Range data (for the equity curve)
+df_trades_range = fetch_trades_range(symbol, range_start, range_end)
+
 df_shadow = fetch_shadow(symbol, selected_date)
 
 
@@ -150,36 +212,53 @@ else:
     win_rate = (wins / total_exits * 100) if total_exits else 0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Exit Trades", total_exits)
-    c2.metric("Total P&L", f"{total_pnl:,.2f}")
-    c3.metric("Wins", int(wins))
-    c4.metric("Win Rate", f"{win_rate:.1f}%")
+    c1.metric("Exit Trades (Day)", total_exits)
+    c2.metric("Total P&L (Day)", f"{total_pnl:,.2f}")
+    c3.metric("Wins (Day)", int(wins))
+    c4.metric("Win Rate (Day)", f"{win_rate:.1f}%")
 
-    # ========================================================
-    # 📈 Portfolio Value (Intraday Equity Curve)
-    # ========================================================
-    if not exits.empty:
+# ============================================================
+# Portfolio Equity Curve over Range
+# ============================================================
+
+st.subheader("📊 Portfolio Value — Range View")
+
+if df_trades_range.empty:
+    st.info("No trades in the selected range.")
+else:
+    df_trades_range["is_exit_norm"] = df_trades_range["is_exit"].apply(normalize_exit_flag)
+    exits_range = df_trades_range[df_trades_range["is_exit_norm"] == True].copy()
+
+    if exits_range.empty:
+        st.info("No exit trades in the selected range.")
+    else:
         # Base equity for the curve (can be set via env or secrets)
         BASE_EQUITY = float(os.getenv("DASHBOARD_BASE_EQUITY", "100000"))
 
-        curve = exits.sort_values("ts").copy()
-        curve[pnl_col] = curve[pnl_col].fillna(0)
-        curve["cum_pnl"] = curve[pnl_col].cumsum()
+        pnl_col_range = "realized_pnl" if "realized_pnl" in exits_range.columns else "pnl"
+
+        curve = exits_range.sort_values("ts").copy()
+        curve[pnl_col_range] = curve[pnl_col_range].fillna(0)
+        curve["cum_pnl"] = curve[pnl_col_range].cumsum()
         curve["equity"] = BASE_EQUITY + curve["cum_pnl"]
 
-        # Add a flat start-of-day point so the line is horizontal until first trade
-        start_of_day = datetime.combine(selected_date, dtime.min)
+        # Start-of-range anchor (horizontal line until first exit)
+        if range_start:
+            start_anchor = datetime.combine(range_start, dtime.min)
+        else:
+            first_ts = curve["ts"].min()
+            start_anchor = datetime.combine(first_ts.date(), dtime.min)
+
         start_row = {
-            "ts": pd.to_datetime(start_of_day),
+            "ts": pd.to_datetime(start_anchor),
             "cum_pnl": 0.0,
             "equity": BASE_EQUITY,
         }
+
         curve = pd.concat(
             [pd.DataFrame([start_row]), curve[["ts", "cum_pnl", "equity"]]],
             ignore_index=True,
         )
-
-        st.markdown("### 📊 Portfolio Value (Intraday)")
 
         equity_chart = (
             alt.Chart(curve)
@@ -202,12 +281,22 @@ else:
 
         st.altair_chart(equity_chart, use_container_width=True)
 
-    # ========================================================
-    # 💰 P&L by Symbol (existing bar chart)
-    # ========================================================
-    st.markdown("### 💰 P&L by Symbol")
 
-    if not exits.empty:
+# ============================================================
+# 💰 P&L by Symbol (same-day)
+# ============================================================
+
+st.markdown("### 💰 P&L by Symbol (Day)")
+
+if df_trades.empty:
+    st.info("No trades for this date.")
+else:
+    exits = df_trades[df_trades["is_exit_norm"] == True].copy()
+    if exits.empty:
+        st.info("No exit trades for this date.")
+    else:
+        pnl_col = "realized_pnl" if "realized_pnl" in exits.columns else "pnl"
+
         pnl_by_sym = (
             exits.groupby("symbol")[pnl_col]
             .sum()
@@ -231,7 +320,6 @@ else:
         )
 
         st.altair_chart(chart, use_container_width=True)
-
 
 
 # ============================================================
@@ -261,7 +349,7 @@ else:
                 return "background-color: rgba(0,255,0,0.25);"
             if v < 0:
                 return "background-color: rgba(255,0,0,0.25);"
-        except:
+        except Exception:
             pass
         return ""
 
@@ -272,7 +360,6 @@ else:
         highlight_pnl,
         subset=pnl_columns
     )
-
 
     # Force single-line, horizontal scroll
     st.markdown(
